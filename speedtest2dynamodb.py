@@ -6,8 +6,12 @@
 
 import sys
 import logging
+import logging.handlers
 import subprocess
 import re
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_to_bit_per_second(value, unit):
@@ -49,7 +53,7 @@ def parse_output(output_lines):
         ping_match = ping_pattern.match(output_lines)
         ping_ms = float(ping_match.group(1))
     except AttributeError:
-        logging.exception('Unable to parse - using default value.')
+        logger.exception('Unable to parse - using default value.')
 
     try:
         download_match = download_pattern.match(output_lines)
@@ -58,7 +62,7 @@ def parse_output(output_lines):
             download_match.group(2)
         )
     except AttributeError:
-        logging.exception('Unable to parse - using default value.')
+        logger.exception('Unable to parse - using default value.')
 
     try:
         upload_match = upload_pattern.match(output_lines)
@@ -67,7 +71,7 @@ def parse_output(output_lines):
             upload_match.group(2)
         )
     except AttributeError:
-        logging.exception('Unable to parse - using default value.')
+        logger.exception('Unable to parse - using default value.')
 
     return (ping_ms, download_bit_per_second, upload_bit_per_second)
 
@@ -75,20 +79,24 @@ def parse_output(output_lines):
 def main():
     """The main entry point."""
     # TODO: Let the log level be set via command line options.
-    # TODO: What about log rotation?
-    logging.basicConfig(
-        filename='/tmp/speedtest2DynamoDB.log',
-        format='%(asctime)s %(levelname)s %(message)s',
-        level=logging.DEBUG
+    LOG_FILENAME = '/tmp/speedtest2DynamoDB.log'
+    logger.setLevel(logging.DEBUG)
+    log_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILENAME,
+        maxBytes=1024,
+        backupCount=10
     )
-    logging.info('Starting ...')
+    log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    log_handler.setFormatter(log_formatter)
+    logger.addHandler(log_handler)
+    logger.info('Starting ...')
     try:
         external_speedtest_cli_output = subprocess.check_output(
             ['../speedtest-cli/speedtest_cli.py', '--simple'],
             stderr=subprocess.STDOUT
         )
     except subprocess.CalledProcessError as cpe:
-        logging.error(
+        logger.error(
             """Ooops!
 Command
 \t{}
@@ -101,15 +109,15 @@ Command output:
         )
         sys.exit(1)
 
-    logging.debug('OUTPUT:\n{}'.format(external_speedtest_cli_output))
+    logger.debug('OUTPUT:\n{}'.format(external_speedtest_cli_output))
     ping_ms, upload_bit_per_second, download_bit_per_second = parse_output(
         external_speedtest_cli_output
     )
-    logging.debug(
+    logger.debug(
         'PARSED:\nping [ms]: {}\ndownload [bit/s]: {}\nupload [bits/s]: {}'.
         format(ping_ms, download_bit_per_second, upload_bit_per_second)
     )
-    logging.info('Finished.')
+    logger.info('Finished.')
 
 if __name__ == '__main__':
     main()
