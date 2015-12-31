@@ -6,10 +6,50 @@
 import sys
 import logging
 import subprocess
+import re
+
+def _normalize_to_bit_per_second(value, unit):
+    bit_per_second = -1
+
+    if re.match('^bit', unit, flags=re.IGNORECASE):
+        bit_per_second = float(value)
+    elif re.match('^kbit', unit, flags=re.IGNORECASE):
+        bit_per_second = float(value) * 1024
+    elif re.match('^mbit', unit, flags=re.IGNORECASE):
+        bit_per_second = float(value) * 1024 * 1024
+    elif re.match('^gbit', unit, flags=re.IGNORECASE):
+        bit_per_second = float(value) * 1024 * 1024 * 1024
+
+    return bit_per_second
 
 def parse_output(output_lines):
-    # TODO: Implement parsing.
     ping_ms = download_bit_per_second = upload_bit_per_second = -1
+
+    ping_pattern = re.compile(r'.*Ping: (\d+\.?\d*) ms.*', re.DOTALL)
+    download_pattern = re.compile(r'.*Download: (\d+\.?\d+) (\w+)/s.*', re.DOTALL)
+    upload_pattern = re.compile(r'.*Upload: (\d+\.?\d+) (\w+)/s.*', re.DOTALL)
+
+    try:
+        ping_match = ping_pattern.match(output_lines)
+        ping_ms = float(ping_match.group(1))
+    except Exception as e:
+        logging.exception('Unable to parse - using default value.')
+        pass
+
+    try:
+        download_match = download_pattern.match(output_lines)
+        download_bit_per_second = _normalize_to_bit_per_second(download_match.group(1), download_match.group(2))
+    except Exception as e:
+        logging.exception('Unable to parse - using default value.')
+        pass
+
+    try:
+        upload_match = upload_pattern.match(output_lines)
+        upload_bit_per_second = _normalize_to_bit_per_second(upload_match.group(1), upload_match.group(2))
+    except Exception as e:
+        logging.exception('Unable to parse - using default value.')
+        pass
+
     return (ping_ms, download_bit_per_second, upload_bit_per_second)
 
 def main():
