@@ -1,10 +1,14 @@
 """Test cases."""
 import unittest
+import logging
 from speedtest2dynamodb import parse_output
 
 
 class SpeedTest2DynamoDBTestCase(unittest.TestCase):
     """Collection of tests."""
+
+    def setUp(self):
+        self.logger = logging.getLogger()
 
     def test_parse_output_bit(self):
         """Test output that contains only bit/s."""
@@ -62,12 +66,20 @@ class SpeedTest2DynamoDBTestCase(unittest.TestCase):
 
     def test_parse_output_not_matching(self):
         """Test whether default values are returned when unable to parse."""
+        # Silence logging, as we expect to produce exceptions within tests and
+        # do not want to clutter the output:
+        old_log_level = self.logger.getEffectiveLevel()
+        self.logger.setLevel(logging.CRITICAL)
+
         self.assertEqual(
             parse_output(
                 'Ping: 10.331 s\nDownload: 40.xx bit/s\nUpload: 5.88 m/s'
             ),
             (-1, -1, -1)
         )
+
+        # Restore to default log level:
+        self.logger.setLevel(old_log_level)
 
 if __name__ == '__main__':
     unittest.main()
