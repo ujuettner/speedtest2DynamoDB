@@ -7,11 +7,25 @@
 import sys
 import logging
 import logging.handlers
+import time
 import subprocess
 import re
+import decimal
+import boto3
+from botocore.exceptions import ClientError
 
 
-logger = logging.getLogger(__name__)
+_LOG_FILENAME = '/tmp/speedtest2DynamoDB.log'
+_LOG_LEVEL = logging.DEBUG
+_LOG_MAX_BYTES = 1024 * 1024
+_LOG_BACKUP_COUNT = 9
+_DYNAMODB_TABLE_NAME = 'speedtest'
+_DYNAMODB_RCU = 5
+_DYNAMODB_WCU = 5
+_DYNAMODB_TRIES = 3
+_DYNAMODB_RETRY_SLEEP_BASE_SECS = 30
+_LOGGER = logging.getLogger(__name__)
+_DYNAMODB = boto3.resource('dynamodb')
 
 
 def _normalize_to_bit_per_second(value, unit):
@@ -53,7 +67,7 @@ def parse_output(output_lines):
         ping_match = ping_pattern.match(output_lines)
         ping_ms = float(ping_match.group(1))
     except AttributeError:
-        logger.exception('Unable to parse - using default value.')
+        _LOGGER.exception('Unable to parse - using default value.')
 
     try:
         download_match = download_pattern.match(output_lines)
@@ -62,7 +76,7 @@ def parse_output(output_lines):
             download_match.group(2)
         )
     except AttributeError:
-        logger.exception('Unable to parse - using default value.')
+        _LOGGER.exception('Unable to parse - using default value.')
 
     try:
         upload_match = upload_pattern.match(output_lines)
@@ -71,32 +85,105 @@ def parse_output(output_lines):
             upload_match.group(2)
         )
     except AttributeError:
-        logger.exception('Unable to parse - using default value.')
+        _LOGGER.exception('Unable to parse - using default value.')
 
     return (ping_ms, download_bit_per_second, upload_bit_per_second)
 
 
+def _create_dynamodb_table(table_name):
+    """Create the table in DynamoDB."""
+    table = _DYNAMODB.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {
+                'AttributeName': 'timestamp',
+                'KeyType': 'HASH'
+            }
+        ],
+        AttributeDefinitions=[
+            {
+                'AttributeName': 'timestamp',
+                'AttributeType': 'N'
+            }
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': _DYNAMODB_RCU,
+            'WriteCapacityUnits': _DYNAMODB_WCU
+        }
+    )
+    table.meta.client.get_waiter('table_exists').wait(TableName=table_name)
+    table.reload()
+    _LOGGER.info(
+        'DynamoDB table {} created. Status: {}. Number of items: {}.'.
+        format(table_name, table.table_status, table.item_count)
+    )
+
+
+def _table_exists(table_name):
+    """Checks whether a DynamoDB table exists."""
+    return len([t for t in _DYNAMODB.tables.all() if t.name == table_name]) > 0
+
+
+def write_to_dynamodb(table_name,
+                      timestamp,
+                      ping_ms,
+                      download_bit_per_second,
+                      upload_bit_per_second):
+    """Write given values to DynamoDB."""
+    if not _table_exists(table_name):
+        _create_dynamodb_table(table_name)
+
+    table = _DYNAMODB.Table(_DYNAMODB_TABLE_NAME)
+    try_count = 0
+    while try_count < _DYNAMODB_TRIES:
+        try:
+            table.put_item(
+                Item={
+                    'timestamp': decimal.Decimal(str(timestamp)),
+                    'ping_ms': decimal.Decimal(str(ping_ms)),
+                    'download_bit_per_second':
+                        decimal.Decimal(str(download_bit_per_second)),
+                    'upload_bit_per_second':
+                        decimal.Decimal(str(upload_bit_per_second))
+                }
+            )
+        except ClientError:
+            wait_time = (2 ** try_count) * _DYNAMODB_RETRY_SLEEP_BASE_SECS
+            try_count += 1
+            _LOGGER.warn(
+                'Try {}/{} to write to table {} failed.'.
+                format(try_count, _DYNAMODB_TRIES, table_name)
+            )
+            if try_count < _DYNAMODB_TRIES:
+                _LOGGER.info(
+                    'Waiting {} seconds before re-trying ...'.
+                    format(wait_time)
+                )
+                time.sleep(wait_time)
+        else:
+            break
+
+
 def main():
     """The main entry point."""
-    # TODO: Let the log level be set via command line options.
-    LOG_FILENAME = '/tmp/speedtest2DynamoDB.log'
-    logger.setLevel(logging.DEBUG)
+    _LOGGER.setLevel(_LOG_LEVEL)
     log_handler = logging.handlers.RotatingFileHandler(
-        LOG_FILENAME,
-        maxBytes=1024,
-        backupCount=10
+        _LOG_FILENAME,
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT
     )
     log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     log_handler.setFormatter(log_formatter)
-    logger.addHandler(log_handler)
-    logger.info('Starting ...')
+    _LOGGER.addHandler(log_handler)
+    timestamp = time.time()
+    _LOGGER.info('Starting at {} ...'.format(timestamp))
     try:
         external_speedtest_cli_output = subprocess.check_output(
             ['../speedtest-cli/speedtest_cli.py', '--simple'],
             stderr=subprocess.STDOUT
         )
     except subprocess.CalledProcessError as cpe:
-        logger.error(
+        _LOGGER.error(
             """Ooops!
 Command
 \t{}
@@ -109,23 +196,28 @@ Command output:
         )
         sys.exit(1)
 
-    logger.debug('OUTPUT:\n{}'.format(external_speedtest_cli_output))
-    ping_ms, upload_bit_per_second, download_bit_per_second = parse_output(
+    _LOGGER.debug('OUTPUT:\n{}'.format(external_speedtest_cli_output))
+    ping_ms, download_bit_per_second, upload_bit_per_second = parse_output(
         external_speedtest_cli_output
     )
-    logger.debug(
+    _LOGGER.debug(
         'PARSED:\nping [ms]: {}\ndownload [bit/s]: {}\nupload [bits/s]: {}'.
         format(ping_ms, download_bit_per_second, upload_bit_per_second)
     )
-    logger.info('Finished.')
+    _LOGGER.info(
+        'Writing to DynamoDB table {} ...'.
+        format(_DYNAMODB_TABLE_NAME)
+    )
+    write_to_dynamodb(
+        _DYNAMODB_TABLE_NAME,
+        timestamp,
+        ping_ms,
+        download_bit_per_second,
+        upload_bit_per_second
+    )
+    _LOGGER.info('Finished.')
 
 if __name__ == '__main__':
     main()
-
-# TODO: virtualenv + pip
-# TODO: Create table and define schema.
-# TODO: https://github.com/boto/boto3
-#       https://boto3.readthedocs.org/en/latest/reference/services/dynamodb.html
-# TODO: Ansible
 
 # vim:ts=4:sw=4:expandtab
