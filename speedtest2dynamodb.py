@@ -96,25 +96,24 @@ def _create_dynamodb_table(table_name):
     table = _DYNAMODB.create_table(
         TableName=table_name,
         KeySchema=[
-        {
-            'AttributeName': 'id',
-            'KeyType': 'HASH'
-        },
-        {
-            'AttributeName': 'timestamp',
-            'KeyType': 'RANGE'
-        }
+            {
+                'AttributeName': 'id',
+                'KeyType': 'HASH'
+            },
+            {
+                'AttributeName': 'timestamp',
+                'KeyType': 'RANGE'
+            }
         ],
         AttributeDefinitions=[
-        {
-            'AttributeName': 'id',
-            'AttributeType': 'S'
-        },
-        {
-            'AttributeName': 'timestamp',
-            'AttributeType': 'N'
-        },
-
+            {
+                'AttributeName': 'id',
+                'AttributeType': 'S'
+            },
+            {
+                'AttributeName': 'timestamp',
+                'AttributeType': 'N'
+            }
         ],
         ProvisionedThroughput={
             'ReadCapacityUnits': _DYNAMODB_RCU,
