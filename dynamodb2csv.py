@@ -8,8 +8,9 @@ import boto3
 import datetime
 
 
-_DYNAMODB_TABLE_NAME = 'speedtest'
+_DYNAMODB_TABLE_NAME = 'speedtestresults'
 _FIELDS = [
+    'id',
     'timestamp',
     'ping_ms',
     'download_bit_per_second',

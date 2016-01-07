@@ -10,6 +10,7 @@ import logging.handlers
 import time
 import subprocess
 import re
+import uuid
 import decimal
 import boto3
 from botocore.exceptions import ClientError
@@ -19,7 +20,7 @@ _LOG_FILENAME = '/tmp/speedtest2DynamoDB.log'
 _LOG_LEVEL = logging.DEBUG
 _LOG_MAX_BYTES = 1024 * 1024
 _LOG_BACKUP_COUNT = 9
-_DYNAMODB_TABLE_NAME = 'speedtest'
+_DYNAMODB_TABLE_NAME = 'speedtestresults'
 _DYNAMODB_RCU = 5
 _DYNAMODB_WCU = 5
 _DYNAMODB_TRIES = 3
@@ -95,16 +96,25 @@ def _create_dynamodb_table(table_name):
     table = _DYNAMODB.create_table(
         TableName=table_name,
         KeySchema=[
-            {
-                'AttributeName': 'timestamp',
-                'KeyType': 'HASH'
-            }
+        {
+            'AttributeName': 'id',
+            'KeyType': 'HASH'
+        },
+        {
+            'AttributeName': 'timestamp',
+            'KeyType': 'RANGE'
+        }
         ],
         AttributeDefinitions=[
-            {
-                'AttributeName': 'timestamp',
-                'AttributeType': 'N'
-            }
+        {
+            'AttributeName': 'id',
+            'AttributeType': 'S'
+        },
+        {
+            'AttributeName': 'timestamp',
+            'AttributeType': 'N'
+        },
+
         ],
         ProvisionedThroughput={
             'ReadCapacityUnits': _DYNAMODB_RCU,
@@ -139,6 +149,7 @@ def write_to_dynamodb(table_name,
         try:
             table.put_item(
                 Item={
+                    'id': str(uuid.uuid4()),
                     'timestamp': decimal.Decimal(str(timestamp)),
                     'ping_ms': decimal.Decimal(str(ping_ms)),
                     'download_bit_per_second':
