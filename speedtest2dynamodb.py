@@ -20,6 +20,8 @@ _LOG_FILENAME = '/tmp/speedtest2DynamoDB.log'
 _LOG_LEVEL = logging.DEBUG
 _LOG_MAX_BYTES = 1024 * 1024
 _LOG_BACKUP_COUNT = 9
+_SUBPROCESS_TRIES = 3
+_SUBPROCESS_RETRY_SLEEP_BASE_SECS = 10
 _DYNAMODB_TABLE_NAME = 'speedtestresults'
 _DYNAMODB_RCU = 5
 _DYNAMODB_WCU = 5
@@ -32,7 +34,7 @@ _DYNAMODB = boto3.resource('dynamodb')
 def _normalize_to_bit_per_second(value, unit):
     """Return given value as bit/s depending on given
        unit."""
-    bit_per_second = -1
+    bit_per_second = -1.0
 
     if re.match('^bit', unit, flags=re.IGNORECASE):
         bit_per_second = float(value)
@@ -49,7 +51,7 @@ def _normalize_to_bit_per_second(value, unit):
 def parse_output(output_lines):
     """Parse command output and return a tuple containing the ping time in ms,
        the download and the upload speed (both as bit/s)."""
-    ping_ms = download_bit_per_second = upload_bit_per_second = -1
+    ping_ms = download_bit_per_second = upload_bit_per_second = -1.0
 
     ping_pattern = re.compile(
         r'.*Ping: (\d+\.?\d*) ms.*',
@@ -123,8 +125,10 @@ def _create_dynamodb_table(table_name):
     table.meta.client.get_waiter('table_exists').wait(TableName=table_name)
     table.reload()
     _LOGGER.info(
-        'DynamoDB table {} created. Status: {}. Number of items: {}.'.
-        format(table_name, table.table_status, table.item_count)
+        'DynamoDB table %s created. Status: %s. Number of items: %d.',
+        table_name,
+        table.table_status,
+        table.item_count
     )
 
 
@@ -161,13 +165,15 @@ def write_to_dynamodb(table_name,
             wait_time = (2 ** try_count) * _DYNAMODB_RETRY_SLEEP_BASE_SECS
             try_count += 1
             _LOGGER.warn(
-                'Try {}/{} to write to table {} failed.'.
-                format(try_count, _DYNAMODB_TRIES, table_name)
+                'Try %d/%d to write to table %s failed.',
+                try_count,
+                _DYNAMODB_TRIES,
+                table_name
             )
             if try_count < _DYNAMODB_TRIES:
                 _LOGGER.info(
-                    'Waiting {} seconds before re-trying ...'.
-                    format(wait_time)
+                    'Waiting %d seconds before re-trying ...',
+                    wait_time
                 )
                 time.sleep(wait_time)
         else:
@@ -185,38 +191,57 @@ def main():
     log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     log_handler.setFormatter(log_formatter)
     _LOGGER.addHandler(log_handler)
-    timestamp = time.time()
-    _LOGGER.info('Starting at {} ...'.format(timestamp))
-    try:
-        external_speedtest_cli_output = subprocess.check_output(
-            ['../speedtest-cli/speedtest_cli.py', '--simple'],
-            stderr=subprocess.STDOUT
-        )
-    except subprocess.CalledProcessError as cpe:
-        _LOGGER.error(
-            """Ooops!
+    try_count = 0
+    while try_count < _SUBPROCESS_TRIES:
+        timestamp = time.time()
+        _LOGGER.info('Starting at %s ...', timestamp)
+        try:
+            external_speedtest_cli_output = subprocess.check_output(
+                ['../speedtest-cli/speedtest_cli.py', '--simple'],
+                stderr=subprocess.STDOUT
+            )
+        except subprocess.CalledProcessError as cpe:
+            wait_time = (2 ** try_count) * _SUBPROCESS_RETRY_SLEEP_BASE_SECS
+            try_count += 1
+            _LOGGER.warn(
+                """%d/%d Ooops!
 Command
-\t{}
+\t%s
 returned with exit code
-\t{}
+\t%d
 .
 Command output:
-{}""".
-            format(cpe.cmd, cpe.returncode, cpe.output)
-        )
-        sys.exit(1)
+%s""",
+                try_count,
+                _SUBPROCESS_TRIES,
+                cpe.cmd,
+                cpe.returncode,
+                cpe.output
+            )
+            if try_count < _SUBPROCESS_TRIES:
+                _LOGGER.info(
+                    'Waiting %d seconds before re-trying ...',
+                    wait_time
+                )
+                time.sleep(wait_time)
+            else:
+                sys.exit(1)
+        else:
+            break
 
-    _LOGGER.debug('OUTPUT:\n{}'.format(external_speedtest_cli_output))
+    _LOGGER.debug('OUTPUT:\n%s', external_speedtest_cli_output)
     ping_ms, download_bit_per_second, upload_bit_per_second = parse_output(
         external_speedtest_cli_output
     )
     _LOGGER.debug(
-        'PARSED:\nping [ms]: {}\ndownload [bit/s]: {}\nupload [bits/s]: {}'.
-        format(ping_ms, download_bit_per_second, upload_bit_per_second)
+        'PARSED:\nping [ms]: %f\ndownload [bit/s]: %f\nupload [bits/s]: %f',
+        ping_ms,
+        download_bit_per_second,
+        upload_bit_per_second
     )
     _LOGGER.info(
-        'Writing to DynamoDB table {} ...'.
-        format(_DYNAMODB_TABLE_NAME)
+        'Writing to DynamoDB table %s ...',
+        _DYNAMODB_TABLE_NAME
     )
     write_to_dynamodb(
         _DYNAMODB_TABLE_NAME,
